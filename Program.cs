@@ -10,6 +10,14 @@ using Microsoft.IdentityModel.Tokens;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using BCrypt.Net;
+using System.IO;
+
+public class AppConfig
+{
+    public List<string> ListenUrls { get; set; } = new();
+    public string LogLevel { get; set; } = "Information";
+    public string LogFilePath { get; set; } = "logs/app.log";
+}
 
 namespace SimpleApiServer
 {
@@ -117,23 +125,84 @@ namespace SimpleApiServer
             Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         };
 
+        // ==================================================================
+        //  ЛОГГЕР (консоль + файл)
+        // ==================================================================
+        private static class Logger
+        {
+            private static string _logLevel = "Information";
+            private static string? _logFilePath;
+            private static readonly object _lock = new();
+
+            public static void Initialize(string level, string? filePath)
+            {
+                _logLevel = level;
+                _logFilePath = filePath;
+                if (!string.IsNullOrEmpty(_logFilePath))
+                {
+                    var dir = Path.GetDirectoryName(_logFilePath);
+                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                }
+            }
+
+            private static bool ShouldLog(string level) =>
+                (level == "Error") ||
+                (level == "Warning" && (_logLevel == "Warning" || _logLevel == "Information")) ||
+                (level == "Info" && _logLevel == "Information");
+
+            private static void Write(string level, string message)
+            {
+                if (!ShouldLog(level)) return;
+                var line = $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} [{level}] {message}";
+                Console.WriteLine(line);
+                if (!string.IsNullOrEmpty(_logFilePath))
+                {
+                    lock (_lock)
+                    {
+                        File.AppendAllText(_logFilePath, line + Environment.NewLine);
+                    }
+                }
+            }
+
+            public static void Info(string msg) => Write("Info", msg);
+            public static void Warning(string msg) => Write("Warning", msg);
+            public static void Error(string msg, Exception? ex = null) =>
+                Write("Error", ex == null ? msg : $"{msg}: {ex.Message}");
+        }
+
         static void Main(string[] args)
         {
+            // 1. Чтение конфигурации
+            var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+            if (!File.Exists(configPath))
+            {
+                Console.WriteLine("Ошибка: файл appsettings.json не найден.");
+                return;
+            }
+            var json = File.ReadAllText(configPath);
+            var config = JsonSerializer.Deserialize<AppConfig>(json, _jsonOptions)
+                         ?? throw new InvalidOperationException("Не удалось загрузить конфигурацию.");
+
+            // 2. Инициализация логгера
+            Logger.Initialize(config.LogLevel, config.LogFilePath);
+            Logger.Info("Сервер запускается...");
+
+            // 3. Запуск HttpListener
             using (HttpListener listener = new HttpListener())
             {
-                listener.Prefixes.Add("http://localhost:5000/");
+                listener.Prefixes.Add(config.ListenUrls[0]);
                 listener.Start();
 
-                Console.WriteLine("Сервер запущен: http://localhost:5000/");
-                Console.WriteLine("Endpoint-ы:");
-                Console.WriteLine("  POST   /api/auth/register");
-                Console.WriteLine("  POST   /api/auth/login");
-                Console.WriteLine("  GET    /api/tasks");
-                Console.WriteLine("  POST   /api/tasks (защищён JWT)");
-                Console.WriteLine("  GET    /api/tasks/{id}");
-                Console.WriteLine("  PUT    /api/tasks/{id}");
-                Console.WriteLine("  DELETE /api/tasks/{id}");
-                Console.WriteLine("Для остановки нажмите Ctrl+C\n");
+                Logger.Info($"Сервер запущен: {config.ListenUrls[0]}");
+                Logger.Info("Endpoint-ы:");
+                Logger.Info("  POST   /api/auth/register");
+                Logger.Info("  POST   /api/auth/login");
+                Logger.Info("  GET    /api/tasks");
+                Logger.Info("  POST   /api/tasks (защищён JWT)");
+                Logger.Info("  GET    /api/tasks/{id}");
+                Logger.Info("  PUT    /api/tasks/{id}");
+                Logger.Info("  DELETE /api/tasks/{id}");
+                Logger.Info("Для остановки нажмите Ctrl+C");
 
                 while (true)
                 {
@@ -143,14 +212,12 @@ namespace SimpleApiServer
 
                     try
                     {
-                        Console.WriteLine($"{request.HttpMethod} {request.RawUrl}");
+                        Logger.Info($"Запрос: {request.HttpMethod} {request.RawUrl}");
                         RouteRequest(request, response);
                     }
                     catch (Exception ex)
                     {
-                        // Логируем исключение в консоль для диагностики
-                        Console.WriteLine($"[ERROR] {ex.GetType().Name}: {ex.Message}");
-                        // Отправляем единый формат ошибки 500
+                        Logger.Error($"Необработанное исключение в Main: {ex.GetType().Name}", ex);
                         WriteInternalServerError(response, "Произошла внутренняя ошибка сервера");
                     }
                 }
@@ -162,7 +229,6 @@ namespace SimpleApiServer
             string path = request.Url?.AbsolutePath ?? "";
             string method = request.HttpMethod;
 
-            // --- Маршруты аутентификации (публичные) ---
             if (path == "/api/auth/register" && method == "POST")
             {
                 HandleRegister(request, response);
@@ -174,7 +240,6 @@ namespace SimpleApiServer
                 return;
             }
 
-            // --- Маршруты задач ---
             if (path.StartsWith("/api/tasks"))
             {
                 string remaining = path.Substring("/api/tasks".Length).Trim('/');
@@ -187,7 +252,6 @@ namespace SimpleApiServer
                             HandleGetTasks(request, response);
                             return;
                         case "POST":
-                            // Эндпоинт ЗАЩИЩЁН: проверяем JWT
                             if (!ValidateJwtFromRequest(request, response))
                                 return;
                             HandleCreateTask(request, response);
@@ -217,10 +281,12 @@ namespace SimpleApiServer
                     }
                 }
 
+                Logger.Info($"404: ресурс {path} не найден");
                 WriteError(response, 404, "Ресурс не найден", "NOT_FOUND");
                 return;
             }
 
+            Logger.Info($"404: ресурс {path} не найден");
             WriteError(response, 404, "Ресурс не найден", "NOT_FOUND");
         }
 
@@ -232,6 +298,7 @@ namespace SimpleApiServer
         {
             if (request.ContentType == null || !request.ContentType.StartsWith("application/json"))
             {
+                Logger.Warning("Регистрация: неверный Content-Type");
                 WriteError(response, 400, "Требуется Content-Type: application/json", "INVALID_CONTENT_TYPE");
                 return;
             }
@@ -239,6 +306,7 @@ namespace SimpleApiServer
             string body = ReadBody(request);
             if (string.IsNullOrWhiteSpace(body))
             {
+                Logger.Warning("Регистрация: пустое тело запроса");
                 WriteError(response, 400, "Пустое тело запроса", "EMPTY_BODY");
                 return;
             }
@@ -250,12 +318,14 @@ namespace SimpleApiServer
             }
             catch
             {
+                Logger.Warning("Регистрация: некорректный JSON");
                 WriteError(response, 400, "Некорректный JSON", "INVALID_JSON");
                 return;
             }
 
             if (registerData == null || string.IsNullOrWhiteSpace(registerData.Email) || string.IsNullOrWhiteSpace(registerData.Password))
             {
+                Logger.Warning("Регистрация: отсутствуют обязательные поля Email/Password");
                 WriteError(response, 400, "Поля Email и Password обязательны", "MISSING_FIELDS");
                 return;
             }
@@ -264,6 +334,7 @@ namespace SimpleApiServer
             {
                 if (_users.Any(u => u.Email.Equals(registerData.Email, StringComparison.OrdinalIgnoreCase)))
                 {
+                    Logger.Warning($"Регистрация: email {registerData.Email} уже существует");
                     WriteError(response, 400, "Пользователь с таким email уже существует", "EMAIL_EXISTS");
                     return;
                 }
@@ -278,6 +349,7 @@ namespace SimpleApiServer
                     Name = registerData.Name ?? ""
                 };
                 _users.Add(newUser);
+                Logger.Info($"Зарегистрирован новый пользователь: {registerData.Email}");
             }
 
             WriteSuccess(response, new { message = "Регистрация успешна" }, 201);
@@ -287,6 +359,7 @@ namespace SimpleApiServer
         {
             if (request.ContentType == null || !request.ContentType.StartsWith("application/json"))
             {
+                Logger.Warning("Логин: неверный Content-Type");
                 WriteError(response, 400, "Требуется Content-Type: application/json", "INVALID_CONTENT_TYPE");
                 return;
             }
@@ -294,6 +367,7 @@ namespace SimpleApiServer
             string body = ReadBody(request);
             if (string.IsNullOrWhiteSpace(body))
             {
+                Logger.Warning("Логин: пустое тело запроса");
                 WriteError(response, 400, "Пустое тело запроса", "EMPTY_BODY");
                 return;
             }
@@ -305,12 +379,14 @@ namespace SimpleApiServer
             }
             catch
             {
+                Logger.Warning("Логин: некорректный JSON");
                 WriteError(response, 400, "Некорректный JSON", "INVALID_JSON");
                 return;
             }
 
             if (loginData == null || string.IsNullOrWhiteSpace(loginData.Email) || string.IsNullOrWhiteSpace(loginData.Password))
             {
+                Logger.Warning("Логин: отсутствуют Email или Password");
                 WriteError(response, 400, "Поля Email и Password обязательны", "MISSING_FIELDS");
                 return;
             }
@@ -323,6 +399,7 @@ namespace SimpleApiServer
 
             if (user == null || !BCrypt.Net.BCrypt.Verify(loginData.Password, user.PasswordHash))
             {
+                Logger.Warning($"Неудачная попытка входа для {loginData.Email}");
                 WriteError(response, 401, "Неверный email или пароль", "INVALID_CREDENTIALS");
                 return;
             }
@@ -354,11 +431,13 @@ namespace SimpleApiServer
                 email = user.Email,
                 expiresAt = expires.ToString("yyyy-MM-ddTHH:mm:ssZ")
             };
+
+            Logger.Info($"Пользователь {user.Email} успешно вошёл в систему");
             WriteSuccess(response, result);
         }
 
         // ==================================================================
-        //  ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ JWT
+        //  JWT
         // ==================================================================
 
         private static bool ValidateJwtFromRequest(HttpListenerRequest request, HttpListenerResponse response)
@@ -366,6 +445,7 @@ namespace SimpleApiServer
             string authHeader = request.Headers["Authorization"];
             if (string.IsNullOrEmpty(authHeader) || !authHeader.StartsWith("Bearer "))
             {
+                Logger.Warning("Отсутствует или неверный заголовок Authorization");
                 WriteUnauthorized(response, "Требуется авторизация");
                 return false;
             }
@@ -391,6 +471,7 @@ namespace SimpleApiServer
             }
             catch
             {
+                Logger.Warning("Невалидный или просроченный JWT");
                 WriteUnauthorized(response, "Невалидный или просроченный токен");
                 return false;
             }
@@ -398,11 +479,7 @@ namespace SimpleApiServer
 
         private static void WriteUnauthorized(HttpListenerResponse response, string message)
         {
-            var errorResponse = new
-            {
-                error = "Unauthorized",
-                message = message
-            };
+            var errorResponse = new { error = "Unauthorized", message = message };
             string json = JsonSerializer.Serialize(errorResponse, _jsonOptions);
             WriteJson(response, json, 401);
         }
@@ -423,6 +500,7 @@ namespace SimpleApiServer
                     tasks = tasks.Where(t => t.IsCompleted == isCompleted);
                 if (parameters.TryGetValue("priority", out string priorityStr) && !string.IsNullOrEmpty(priorityStr) && Enum.TryParse<Priority>(priorityStr, true, out Priority priority))
                     tasks = tasks.Where(t => t.Priority == priority);
+
                 parameters.TryGetValue("orderBy", out string orderBy);
                 parameters.TryGetValue("direction", out string direction);
                 if (!string.IsNullOrEmpty(orderBy))
@@ -463,6 +541,7 @@ namespace SimpleApiServer
                 var task = _tasks.FirstOrDefault(t => t.Id == id);
                 if (task == null)
                 {
+                    Logger.Info($"404: задача с id={id} не найдена");
                     WriteError(response, 404, "Задача не найдена", "NOT_FOUND");
                     return;
                 }
@@ -472,12 +551,9 @@ namespace SimpleApiServer
 
         private static void HandleCreateTask(HttpListenerRequest request, HttpListenerResponse response)
         {
-            // ========== ТЕСТОВЫЙ THROW ДЛЯ ПРОВЕРКИ 500 (раскомментировать при необходимости) ==========
-            // throw new Exception("Тестовое исключение для проверки обработки 500");
-            // =======================================================================================
-
             if (request.ContentType == null || !request.ContentType.StartsWith("application/json"))
             {
+                Logger.Warning("Создание задачи: неверный Content-Type");
                 WriteError(response, 400, "Требуется Content-Type: application/json", "INVALID_CONTENT_TYPE");
                 return;
             }
@@ -485,6 +561,7 @@ namespace SimpleApiServer
             string body = ReadBody(request);
             if (string.IsNullOrWhiteSpace(body))
             {
+                Logger.Warning("Создание задачи: пустое тело запроса");
                 WriteError(response, 400, "Пустое тело запроса", "EMPTY_BODY");
                 return;
             }
@@ -496,12 +573,14 @@ namespace SimpleApiServer
             }
             catch
             {
+                Logger.Warning("Создание задачи: некорректный JSON");
                 WriteError(response, 400, "Некорректный JSON", "INVALID_JSON");
                 return;
             }
 
             if (createData == null)
             {
+                Logger.Warning("Создание задачи: невалидные данные");
                 WriteError(response, 400, "Невалидные данные", "INVALID_DATA");
                 return;
             }
@@ -509,6 +588,7 @@ namespace SimpleApiServer
             var errors = ValidateCreateRequest(createData);
             if (errors.Any())
             {
+                Logger.Warning($"Ошибка валидации при создании задачи: {string.Join(", ", errors.Select(e => e.Field))}");
                 WriteValidationError(response, errors);
                 return;
             }
@@ -530,6 +610,7 @@ namespace SimpleApiServer
                 _tasks.Add(newTask);
                 string location = $"{request.Url.GetLeftPart(UriPartial.Authority)}/api/tasks/{newId}";
                 response.Headers.Set("Location", location);
+                Logger.Info($"Создана задача #{newId}: {newTask.Title}");
                 WriteSuccess(response, newTask, 201);
             }
         }
@@ -538,6 +619,7 @@ namespace SimpleApiServer
         {
             if (request.ContentType == null || !request.ContentType.StartsWith("application/json"))
             {
+                Logger.Warning($"Обновление задачи #{id}: неверный Content-Type");
                 WriteError(response, 400, "Требуется Content-Type: application/json", "INVALID_CONTENT_TYPE");
                 return;
             }
@@ -545,6 +627,7 @@ namespace SimpleApiServer
             string body = ReadBody(request);
             if (string.IsNullOrWhiteSpace(body))
             {
+                Logger.Warning($"Обновление задачи #{id}: пустое тело запроса");
                 WriteError(response, 400, "Пустое тело запроса", "EMPTY_BODY");
                 return;
             }
@@ -556,12 +639,14 @@ namespace SimpleApiServer
             }
             catch
             {
+                Logger.Warning($"Обновление задачи #{id}: некорректный JSON");
                 WriteError(response, 400, "Некорректный JSON", "INVALID_JSON");
                 return;
             }
 
             if (updateData == null)
             {
+                Logger.Warning($"Обновление задачи #{id}: невалидные данные");
                 WriteError(response, 400, "Невалидные данные", "INVALID_DATA");
                 return;
             }
@@ -569,6 +654,7 @@ namespace SimpleApiServer
             var errors = ValidateUpdateRequest(updateData);
             if (errors.Any())
             {
+                Logger.Warning($"Ошибка валидации при обновлении задачи #{id}: {string.Join(", ", errors.Select(e => e.Field))}");
                 WriteValidationError(response, errors);
                 return;
             }
@@ -578,6 +664,7 @@ namespace SimpleApiServer
                 var existing = _tasks.FirstOrDefault(t => t.Id == id);
                 if (existing == null)
                 {
+                    Logger.Info($"404: попытка обновить несуществующую задачу #{id}");
                     WriteError(response, 404, "Задача не найдена", "NOT_FOUND");
                     return;
                 }
@@ -586,6 +673,7 @@ namespace SimpleApiServer
                 if (updateData.IsCompleted.HasValue) existing.IsCompleted = updateData.IsCompleted.Value;
                 if (updateData.Priority.HasValue) existing.Priority = MapPriority(updateData.Priority.Value);
                 if (updateData.DueDate.HasValue) existing.DueDate = updateData.DueDate;
+                Logger.Info($"Обновлена задача #{id}");
                 WriteSuccess(response, existing);
             }
         }
@@ -597,10 +685,12 @@ namespace SimpleApiServer
                 var task = _tasks.FirstOrDefault(t => t.Id == id);
                 if (task == null)
                 {
+                    Logger.Info($"404: попытка удалить несуществующую задачу #{id}");
                     WriteError(response, 404, "Задача не найдена", "NOT_FOUND");
                     return;
                 }
                 _tasks.Remove(task);
+                Logger.Info($"Удалена задача #{id}");
                 WriteSuccess(response, null, 200);
             }
         }
@@ -648,12 +738,12 @@ namespace SimpleApiServer
         }
 
         // ==================================================================
-        //  ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ОТВЕТОВ
+        //  ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
         // ==================================================================
 
         private static string ReadBody(HttpListenerRequest request)
         {
-            using (var reader = new System.IO.StreamReader(request.InputStream, request.ContentEncoding))
+            using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
             {
                 return reader.ReadToEnd();
             }
@@ -695,11 +785,8 @@ namespace SimpleApiServer
 
         private static void WriteInternalServerError(HttpListenerResponse response, string message)
         {
-            var errorResponse = new
-            {
-                error = "InternalServerError",
-                message = message
-            };
+            Logger.Error($"500 Internal Server Error: {message}");
+            var errorResponse = new { error = "InternalServerError", message = message };
             string json = JsonSerializer.Serialize(errorResponse, _jsonOptions);
             WriteJson(response, json, 500);
         }
