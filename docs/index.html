@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Документация API | Консольное приложение</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1000px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+            line-height: 1.5;
+        }
+
+        h1 {
+            color: #1f2937;
+            border-bottom: 2px solid #3b82f6;
+            padding-bottom: 0.3rem;
+        }
+
+        h2 {
+            color: #2563eb;
+            margin-top: 1.8rem;
+        }
+
+        .endpoint {
+            background: #f8fafc;
+            border-left: 4px solid #3b82f6;
+            margin: 1rem 0;
+            padding: 0.75rem 1rem;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .method {
+            font-weight: bold;
+            font-family: monospace;
+            display: inline-block;
+            width: 70px;
+        }
+
+        .path {
+            font-family: monospace;
+            background: #e2e8f0;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+        }
+
+        pre {
+            background: #1e293b;
+            color: #e2e8f0;
+            padding: 1rem;
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+
+        code {
+            background: #e2e8f0;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+
+        .note {
+            background: #fef9c3;
+            padding: 0.5rem 1rem;
+            border-left: 4px solid #eab308;
+            margin: 1rem 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>📄 Документация API (консольное приложение)</h1>
+    <p><strong>Базовый URL:</strong> <code>http://localhost:5000</code> (или адрес вашего сервера)</p>
+    <p>Приложение реализует HTTP API для управления задачами с JWT-аутентификацией.</p>
+
+    <h2>🔐 Аутентификация</h2>
+    <div class="endpoint">
+        <span class="method">POST</span> <span class="path">/api/auth/register</span><br>
+        Регистрация нового пользователя.<br>
+        <strong>Тело (JSON):</strong>
+        <pre>{
+  "email": "user@example.com",
+  "password": "yourpassword",
+  "name": "Имя Пользователя"
+}</pre>
+    </div>
+    <div class="endpoint">
+        <span class="method">POST</span> <span class="path">/api/auth/login</span><br>
+        Вход в систему. Возвращает JWT-токен.<br>
+        <strong>Тело (JSON):</strong>
+        <pre>{
+  "email": "user@example.com",
+  "password": "yourpassword"
+}</pre>
+        <strong>Ответ:</strong>
+        <pre>{
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIs...",
+    "email": "user@example.com",
+    "expiresAt": "2025-04-01T12:00:00Z"
+  }
+}</pre>
+    </div>
+
+    <h2>📋 Задачи (требуют JWT для POST)</h2>
+    <div class="endpoint">
+        <span class="method">GET</span> <span class="path">/api/tasks</span><br>
+        Получить список задач. Поддерживаются параметры фильтрации, сортировки и пагинации:<br>
+        <code>?isCompleted=true&priority=High&orderBy=createdAt&direction=desc&page=1&pageSize=5</code>
+    </div>
+    <div class="endpoint">
+        <span class="method">POST</span> <span class="path">/api/tasks</span> <span style="color:#dc2626;">(защищён JWT)</span><br>
+        Создать новую задачу. Требуется заголовок: <code>Authorization: Bearer &lt;token&gt;</code><br>
+        <strong>Тело (JSON):</strong>
+        <pre>{
+  "title": "Купить продукты",
+  "description": "Молоко, хлеб, яйца",
+  "priority": 4,
+  "dueDate": "2025-12-31T23:59:59Z"
+}</pre>
+        <em>priority от 1 (Low) до 5 (High).</em>
+    </div>
+    <div class="endpoint">
+        <span class="method">GET</span> <span class="path">/api/tasks/{id}</span><br>
+        Получить задачу по ID.
+    </div>
+    <div class="endpoint">
+        <span class="method">PUT</span> <span class="path">/api/tasks/{id}</span><br>
+        Обновить задачу. Передаются любые поля из объекта задачи.
+    </div>
+    <div class="endpoint">
+        <span class="method">DELETE</span> <span class="path">/api/tasks/{id}</span><br>
+        Удалить задачу.
+    </div>
+
+    <h2>📦 Примеры запросов (curl)</h2>
+    <p><strong>Логин:</strong></p>
+    <pre>curl -X POST http://localhost:5000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"123"}'</pre>
+
+    <p><strong>Создание задачи (с JWT):</strong></p>
+    <pre>curl -X POST http://localhost:5000/api/tasks \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <ваш_токен>" \
+  -d '{"title":"Новая задача","priority":5}'</pre>
+
+    <div class="note">
+        📌 <strong>Примечание:</strong> Документация размещена на GitHub Pages, а само API запускается локально или на сервере. Убедитесь, что базовый URL соответствует вашему серверу.
+    </div>
+</body>
+</html>
